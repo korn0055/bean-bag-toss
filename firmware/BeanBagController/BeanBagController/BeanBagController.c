@@ -32,8 +32,13 @@ void enable_active_mode(void);
 
 int main(void)
 {
+	
 	DDRA = (1<<PA6)| (1<<PA2);
 	PORTA = (1<<PA2);		
+	
+	//enable boost convert
+	DDRB = (1<<PB0);
+	PORTB = (1<<PB0);
 		
 	PCMSK0 = (1<<PCINT0)|(1<<PCINT1);
 	enable_active_mode();
