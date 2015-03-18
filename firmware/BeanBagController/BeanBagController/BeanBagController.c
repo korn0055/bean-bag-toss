@@ -24,19 +24,25 @@ uint32_t watchdog_ticks_since_flash = 0;		//8-sec ticks
 uint8_t bLowPowerMode = 0;
 
 
+//PB0 - NSHTD boost converter enable (active high)
+//PB1 - NC
+//PB2 - receiver power
+//PB3 - reset pin
+
 void flash_leds(void);
 void prepare_to_sleep(void);
 void do_on_wakeup(void);
 void enable_active_mode(void);
+void enable_emitter(void);
 
 
 int main(void)
 {
 	
-	DDRA = (1<<PA6)| (1<<PA2);
+	DDRA = (1<<PA6)| (1<<PA2) | (1<<PA7);
 	PORTA = (1<<PA2);		
 	
-	//enable boost convert
+	//enable boost converter
 	DDRB = (1<<PB0);
 	PORTB = (1<<PB0);
 		
@@ -53,7 +59,7 @@ int main(void)
 			prepare_to_sleep();
 		}
 		else
-		{
+		{			
 			enable_pwm();
 		}
 		
@@ -88,6 +94,7 @@ void flash_leds(void)
 void enable_active_mode(void)
 {
 	//clear flags?
+	enable_emitter();
 	enable_pwm();
 	GIMSK = (1<<PCIE0);
 }
@@ -117,6 +124,18 @@ void enable_pwm(void)
 	TCCR1A = (1 << COM1A1) | (1 << COM1A0) | (1 << COM1B1) | (0 << COM1B0)| (0<<WGM11) | (1<<WGM10);
 	OCR1A = 0x080;
 	TCCR1B = (0 << WGM13) | (1 << WGM12) | (0 <<CS12) | (1 << CS11) | (1<<CS10);	//prescaler = 64
+}
+
+void enable_emitter(void)
+{	
+	//100us period	
+	OCR0A = 100;
+	//10us pulse width
+	OCR0B = 10;
+	//fast PWM mode, set OC0B/P7/emitter clear on compare match, set at BOTTOM	
+	TCCR0A = (0 << COM0A1) | (0 << COM0A0) | (1 << COM0B1) | (0 << COM0B0) | (1 << WGM01) | (1 << WGM00);
+	//enable clock with no prescaling (1MHz)
+	TCCR0B = (1 << WGM02)  | (0 << CS02) | (0 << CS01) | (1 << CS00);
 }
 
 ISR(PCINT0_vect)
