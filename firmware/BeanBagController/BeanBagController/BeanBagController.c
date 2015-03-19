@@ -23,6 +23,11 @@ uint8_t	led_low_level_pwm = 200;	//change this to set off to dim/completely off
 uint32_t watchdog_ticks_since_flash = 0;		//8-sec ticks
 uint8_t bLowPowerMode = 0;
 
+uint32_t ambientLightLevel = 0;					//current ambient light level 0 - 65535
+uint16_t ambientLightWarmUpRemaining = 100;		//number of samples to average before making a decision
+//y[0] = (1-alpha)*x[0] + alpha*y[-1]
+//to avoid floating point, alpha is scaled to by 64
+uint32_t ambientLightAlpha = 252; // = .984
 
 //PB0 - NSHTD boost converter enable (active high)
 //PB1 - NC
@@ -34,6 +39,9 @@ void prepare_to_sleep(void);
 void do_on_wakeup(void);
 void enable_active_mode(void);
 void enable_emitter(void);
+void disable_emitter(void);
+void enable_rx_supply(void);
+void measure_ambient_light(void);
 
 
 int main(void)
@@ -43,7 +51,7 @@ int main(void)
 	PORTA = (1<<PA2);		
 	
 	//enable boost converter
-	DDRB = (1<<PB0);
+	DDRB = (1<<PB0) | (1<<PB2);
 	PORTB = (1<<PB0);
 		
 	PCMSK0 = (1<<PCINT0)|(1<<PCINT1);
@@ -94,6 +102,8 @@ void flash_leds(void)
 void enable_active_mode(void)
 {
 	//clear flags?
+	enable_rx_supply();
+	//wait warm up time?
 	enable_emitter();
 	enable_pwm();
 	GIMSK = (1<<PCIE0);
@@ -105,6 +115,7 @@ void prepare_to_sleep(void)
 	TCCR1A = 0;		//disable PWM
 	TCCR1B = 0;
 	PORTA = 0x00;	//shut off LEDs
+	disable_emitter();
 }
 
 void do_on_wakeup(void)
@@ -137,6 +148,34 @@ void enable_emitter(void)
 	//enable clock with no prescaling (1MHz)
 	TCCR0B = (1 << WGM02)  | (0 << CS02) | (0 << CS01) | (1 << CS00);
 }
+
+void disable_emitter(void)
+{
+	TCCR0B = 0;
+}
+
+void enable_rx_supply(void)
+{
+	PORTB |= (1<<PB2);
+}
+
+void measure_ambient_light(void)
+{
+	//use internal 1.1V ref, input = CH3
+	ADMUX = (1 << REFS1) | (0 << REFS1) | (3 << MUX0);
+	//free-running trigger
+	ADCSRB = 0;
+	//digital input disable
+	DIDR0 = (1 << ADC3D);
+	//enable ADC, start conversion, prescaler = 16, adcclk = 1 MHz / 8
+	ADCSRA = (1 << ADEN) | (1 << ADSC) | (0 << ADATE) | (4 << ADPS0);
+	//wait for conversion to complete
+	while(!(ADCSRA & (1<<ADIF)));
+	ambientLightLevel = ((256 - ambientLightAlpha) * (ADC << 8) + ambientLightAlpha * ambientLightLevel) / 256;
+	
+		
+}
+
 
 ISR(PCINT0_vect)
 {
