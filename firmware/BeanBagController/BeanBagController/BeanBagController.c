@@ -11,30 +11,40 @@
 #include <avr/sleep.h>
 #include <stdbool.h>
 
-#define F_CPU							1000000	//main clock frequency, F_CPU must be defined before including delay.h
-#include <util/delay.h>
+//configurable parameters
+#define MAIN_LOOP_PERIOD_MS				1
 
 #define RX_WARMUP_MS					1		//milliseconds to wait for analog circuitry to settle
-#define FLASH_CYCLES					10		
+
+#define FLASH_CYCLES					10		//flash pattern when the beam is broken
 #define FLASH_ON_TIME_MS				50
 #define FLASH_OFF_TIME_MS				75
-#define SLEEP_SIG_CYCLES				3
-#define SLEEP_SIG_ON_TIME_MS			750
+#define SLEEP_SIG_CYCLES				3		//flash pattern before going to sleep
+#define SLEEP_SIG_ON_TIME_MS			750		
 #define SLEEP_SIG_OFF_TIME_MS			750
 
 #define EMITTER_PERIOD_US				100		//max = 255
 #define EMITTER_WIDTH_US				10		//max = EMITTER_PERIOD_US
 
+#define AMBIENT_LIGHT_SAMPLE_PERIOD_MS	10
 #define AMBIENT_LIGHT_SCALE_FACTOR		256		//required for filter to work without floating point
-#define AMBIENT_LIGHT_THRESH			200		//enabled night mode when ambient light rises above this value (0 to 1023)
-#define AMBIENT_LIGHT_HYST				100		//0 to 1023
-#define AMBIENT_LIGHT_INITIAL_LEVEL		512		//0 to 1023
-#define AMBIENT_LIGHT_WARMUP_CYCLES		100		//number of samples to wait for filter to settle before making ambient light decision
-#define AMBIENT_LIGHT_FILTER_ALPHA		220		//y[0] = (1-alpha)*x[0] + alpha*y[-1]
+#define AMBIENT_LIGHT_THRESH			500		//enable night mode when ambient "darkness" rises above this value (0 to 1023)
+#define AMBIENT_LIGHT_HYST				200		//0 to 1023
+#define AMBIENT_LIGHT_FILTER_ALPHA		255		//y[0] = (1-alpha)*x[0] + alpha*y[-1]
 
 #define NIGHT_MODE_PWM_LEVEL			20		//PWM duty cycle out of 255
+#define NIGHT_MODE_MIN_LEVEL			1
+#define NIGHT_MODE_STEP					1
+#define NIGHT_MODE_BREATH_PERIOD_MS		20
+#define NIGHT_MODE_MAX_LEVEL			60
 
-#define IDLE_TIME_TIL_SLEEP_SECS		8
+#define IDLE_TIME_TIL_SLEEP_SECS		1000
+
+//fixed and derived parameters
+#define F_CPU							1000000	//main clock frequency, F_CPU must be defined before including delay.h
+#include <util/delay.h>
+#define AMBIENT_LIGHT_MAIN_LOOP_PERIODS	(AMBIENT_LIGHT_SAMPLE_PERIOD_MS / MAIN_LOOP_PERIOD_MS)
+#define NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS	(NIGHT_MODE_BREATH_PERIOD_MS / MAIN_LOOP_PERIOD_MS)
 #define WDT_TICK_PERIOD_SECS			8
 #define IDLE_WDT_TICKS_TIL_SLEEP		(IDLE_TIME_TIL_SLEEP_SECS / WDT_TICK_PERIOD_SECS)
 
@@ -53,10 +63,12 @@ uint32_t watchdog_ticks_since_flash = 0;		//8-sec ticks
 
 bool bSleepPending = 0;
 bool bNightModeEnabled = 0;
+bool bIsNightModeLevelIncreasing = true;
 volatile bool bFlashPending = 1;
+uint8_t uiNightModeLevel = NIGHT_MODE_PWM_LEVEL;
 
 uint32_t ambientLightLevel = 0;					//current ambient light level = (0 - 1023) * AMBIENT_LIGHT_SCALE_FACTOR
-uint32_t ambientLightWarmUpRemaining = AMBIENT_LIGHT_WARMUP_CYCLES;
+//uint32_t ambientLightWarmUpRemaining = AMBIENT_LIGHT_WARMUP_CYCLES;
 
 //forward declarations
 void flash_led_strip(void);
@@ -68,8 +80,8 @@ void enable_active_mode(void);
 void sample_ambient_light(void);
 bool is_beam_blocked(void);
 
-void enable_flash_pwm();
-void disable_flash_pwm();
+void enable_flash_pwm(void);
+void disable_flash_pwm(void);
 void enable_emitter(void);
 void disable_emitter(void);
 void enable_rx_vdd(void);
@@ -79,7 +91,7 @@ void disable_boost(void);
 
 int main(void)
 {	
-	uint32_t main_loop_iterations = 0;
+	uint32_t main_loop_iterations = 0;	//59-day rollover with a main loop period of 1 ms
 	
 	configure_ddr();
 	PCMSK0 = (1<<PCINT0)|(1<<PCINT1)|(1<<PCINT2);
@@ -89,21 +101,45 @@ int main(void)
 		
     while(1)
     {   
-		_delay_ms(1);
+		_delay_ms(MAIN_LOOP_PERIOD_MS);
 		if(bFlashPending)
 		{
 			flash_led_strip();
 		}
 		
-		sample_ambient_light();
+		if(main_loop_iterations % AMBIENT_LIGHT_MAIN_LOOP_PERIODS == 0)
+		{
+			sample_ambient_light();
+			if(bNightModeEnabled)
+				enable_flash_pwm();				
+			else
+				disable_flash_pwm();				
+		}
+		
+		if(bNightModeEnabled && main_loop_iterations % NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS == 0)
+		{
+			if(bIsNightModeLevelIncreasing)
+			{
+				if(uiNightModeLevel + NIGHT_MODE_STEP <= NIGHT_MODE_MAX_LEVEL)				
+					uiNightModeLevel += NIGHT_MODE_STEP;
+				else
+					bIsNightModeLevelIncreasing = false;				
+			}
+			else
+			{
+				if(uiNightModeLevel >= NIGHT_MODE_MIN_LEVEL + NIGHT_MODE_STEP)
+					uiNightModeLevel -= NIGHT_MODE_STEP;
+				else
+					bIsNightModeLevelIncreasing = true;
+			}
+		}
 				
 		if(watchdog_ticks_since_flash > IDLE_WDT_TICKS_TIL_SLEEP)
 		{
 			bSleepPending = 1;
 			prepare_to_sleep();
 		}
-				
-		//set_sleep_mode(SLEEP_MODE_IDLE);
+						
 		set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 		cli();
 		if (bSleepPending)
@@ -116,6 +152,7 @@ int main(void)
 			sleep_disable();
 			do_on_wakeup();						
 		}
+		main_loop_iterations++;
 		sei();
     }
 }
@@ -164,8 +201,7 @@ void enable_active_mode(void)
 	enable_rx_vdd();
 	enable_boost();
 	//wait warm up time?	
-	enable_emitter();
-	//enable_flash_pwm();
+	enable_emitter();	
 	GIMSK = (1<<PCIE0);
 }
 
@@ -196,7 +232,7 @@ void enable_flash_pwm(void)
 	//configure timer 1 for Fast PWM Mode, 8-bit
 	TCCR1A = (1 << COM1A1) | (0 << COM1A0) | (0 << COM1B1) | (0 << COM1B0)| (0<<WGM11) | (1<<WGM10);
 	//OCR1A = 0x080;
-	OCR1A = NIGHT_MODE_PWM_LEVEL;
+	OCR1A = uiNightModeLevel;
 	TCCR1B = (0 << WGM13) | (1 << WGM12) | (0 <<CS12) | (1 << CS11) | (1<<CS10);	//prescaler = 64
 }
 
@@ -248,8 +284,9 @@ void disable_boost(void)
 
 void sample_ambient_light(void)
 {	
+	uint32_t newValue;
 	//use internal 1.1V ref, input = CH3
-	ADMUX = (1 << REFS1) | (0 << REFS1) | (3 << MUX0);
+	ADMUX = (1 << REFS1) | (0 << REFS0) | (3 << MUX0);
 	//free-running trigger
 	ADCSRB = 0;
 	//digital input disable
@@ -258,20 +295,9 @@ void sample_ambient_light(void)
 	ADCSRA = (1 << ADEN) | (1 << ADSC) | (0 << ADATE) | (4 << ADPS0);
 	//wait for conversion to complete
 	while(!(ADCSRA & (1<<ADIF)));
-	ambientLightLevel = ((AMBIENT_LIGHT_SCALE_FACTOR - AMBIENT_LIGHT_FILTER_ALPHA) * (ADC * AMBIENT_LIGHT_SCALE_FACTOR) + AMBIENT_LIGHT_FILTER_ALPHA * ambientLightLevel) / AMBIENT_LIGHT_SCALE_FACTOR;
-	
-	if(!ambientLightWarmUpRemaining)		
-	{
-		bNightModeEnabled = (ambientLightLevel / AMBIENT_LIGHT_SCALE_FACTOR) > (bNightModeEnabled ? (AMBIENT_LIGHT_THRESH - AMBIENT_LIGHT_HYST) : AMBIENT_LIGHT_THRESH);
-		if(bNightModeEnabled)
-			enable_flash_pwm();
-		else
-			disable_flash_pwm();
-	}
-	else
-	{
-		ambientLightWarmUpRemaining--;
-	}
+	newValue = ADC;
+	ambientLightLevel = ((AMBIENT_LIGHT_SCALE_FACTOR - AMBIENT_LIGHT_FILTER_ALPHA) * (newValue * AMBIENT_LIGHT_SCALE_FACTOR) + AMBIENT_LIGHT_FILTER_ALPHA * ambientLightLevel) / AMBIENT_LIGHT_SCALE_FACTOR;
+	bNightModeEnabled = (ambientLightLevel / AMBIENT_LIGHT_SCALE_FACTOR) > (bNightModeEnabled ? (AMBIENT_LIGHT_THRESH - AMBIENT_LIGHT_HYST) : AMBIENT_LIGHT_THRESH);	
 }
 
 bool is_beam_blocked(void)
