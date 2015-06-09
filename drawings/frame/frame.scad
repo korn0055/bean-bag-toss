@@ -2,10 +2,12 @@ $fs=0.01;
 
 
 //This is the normal hole in the middle of the bean bag toss game
-cylinder(h=1, r1=6/2*25.4, r2=6/2*25.4);
+//cylinder(h=1, r1=6/2*25.4, r2=6/2*25.4);
 difference(){
 	cutout(expand=6);
-	cutout();
+	translate ([0,0,-1]){
+		cutout(height=8);
+		}
 	}
 module cutout(height=6, rChannelInner =8.25/2*25.4, rChannelOuter=9.25/2*25.4, rRxBoard=25.4, rTxLed=12.5, expand=0){
 	//height: height of extrusion
