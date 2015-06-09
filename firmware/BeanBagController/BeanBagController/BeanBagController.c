@@ -14,7 +14,7 @@
 //configurable parameters
 #define MAIN_LOOP_PERIOD_MS				1
 
-#define RX_WARMUP_MS					1		//milliseconds to wait for analog circuitry to settle
+#define RX_WARMUP_MS					10		//milliseconds to wait for analog circuitry to settle
 
 #define FLASH_CYCLES					10		//flash pattern when the beam is broken
 #define FLASH_ON_TIME_MS				50
@@ -38,7 +38,7 @@
 #define NIGHT_MODE_BREATH_PERIOD_MS		20
 #define NIGHT_MODE_MAX_LEVEL			60
 
-#define IDLE_TIME_TIL_SLEEP_SECS		1000
+#define IDLE_TIME_TIL_SLEEP_SECS		100
 
 //fixed and derived parameters
 #define F_CPU							1000000	//main clock frequency, F_CPU must be defined before including delay.h
@@ -73,7 +73,7 @@ uint32_t ambientLightLevel = 0;					//current ambient light level = (0 - 1023) *
 //forward declarations
 void flash_led_strip(void);
 void flash_sleep_signal(void);
-void prepare_to_sleep(void);
+void prepare_to_sleep(bool);
 void do_on_wakeup(void);
 void configure_ddr(void);
 void enable_active_mode(void);
@@ -96,16 +96,22 @@ int main(void)
 	configure_ddr();
 	PCMSK0 = (1<<PCINT0)|(1<<PCINT1)|(1<<PCINT2);
 	enable_active_mode();
-	WDTCSR = (1<<WDIE)|(1<<WDP3)|(1<<WDP0);	//enabled watchdog interrupt, prescaler = 1024, 128kHz clk = 8-sec tick
+	WDTCSR = (1<<WDIE)|(1<<WDP3)|(1<<WDP0);	//enabled watchdog interrupt, prescaler = 1024, 128kHz clk = 8-sec tick		
 	sei();
 		
     while(1)
     {   
 		_delay_ms(MAIN_LOOP_PERIOD_MS);
+		cli();
 		if(bFlashPending)
-		{
+		{					
+			//disable_emitter();
 			flash_led_strip();
+			//enable_emitter();			
+			GIFR = (1<<PCIF0);		//clear pin change flags triggered by flash			
+			bFlashPending = 0;
 		}
+		sei();
 		
 		if(main_loop_iterations % AMBIENT_LIGHT_MAIN_LOOP_PERIODS == 0)
 		{
@@ -135,9 +141,9 @@ int main(void)
 		}
 				
 		if(watchdog_ticks_since_flash > IDLE_WDT_TICKS_TIL_SLEEP)
-		{
-			bSleepPending = 1;
-			prepare_to_sleep();
+		{			
+			prepare_to_sleep(!bSleepPending);	//only flash sleep signal if there has been an event since the last time we woke up
+			bSleepPending = 1;			
 		}
 						
 		set_sleep_mode(SLEEP_MODE_PWR_DOWN);
@@ -166,8 +172,7 @@ void configure_ddr(void)
 void flash_led_strip(void)
 {
 	watchdog_ticks_since_flash = 0;
-	bSleepPending = 0;
-	bFlashPending = 0;
+	bSleepPending = 0;	
 	disable_flash_pwm();
 	for(uint8_t flashes = 0; flashes < FLASH_CYCLES; flashes++)
 	{
@@ -182,6 +187,7 @@ void flash_led_strip(void)
 	{
 		enable_flash_pwm();
 	}
+	
 }
 
 void flash_sleep_signal(void)
@@ -201,30 +207,37 @@ void enable_active_mode(void)
 	enable_rx_vdd();
 	enable_boost();
 	//wait warm up time?	
-	enable_emitter();	
+	enable_emitter();
 	GIMSK = (1<<PCIE0);
 }
 
-void prepare_to_sleep(void)
-{
+void prepare_to_sleep(bool bFlashSleepSignal)
+{	
+	ADCSRA = 0;		//disable ADC
 	GIMSK = 0;		//disable pin-change interrupts
+	GIFR = (1<<PCIF0);		//clear pin change flags trigger by flash
 	//PORTA = 0x00;	//shut off LEDs
 	disable_flash_pwm();
-	flash_sleep_signal();
 	disable_emitter();
 	disable_rx_vdd();
+	if(bFlashSleepSignal)
+		flash_sleep_signal();	
 	disable_boost();
 }
 
 void do_on_wakeup(void)
 {	
+	enable_boost();
 	enable_rx_vdd();
+	enable_emitter();
 	_delay_ms(RX_WARMUP_MS);
 	if( is_beam_blocked() )
 	{
 		enable_active_mode();
-		flash_led_strip();
-	}	
+		bFlashPending = true;
+	}
+	else
+		bSleepPending = true;	
 }
 
 void enable_flash_pwm(void)
@@ -302,7 +315,8 @@ void sample_ambient_light(void)
 
 bool is_beam_blocked(void)
 {
-	return (PINA & ( RX1_MASK | RX2_MASK | RX3_MASK )) !=  ( ( RX1_MASK | RX2_MASK | RX3_MASK ) );
+	//input is low when blocked
+	return (PINA & ( RX1_MASK | RX2_MASK | RX3_MASK )) !=  ( ( RX1_MASK | RX2_MASK | RX3_MASK ) );	
 };
 
 
