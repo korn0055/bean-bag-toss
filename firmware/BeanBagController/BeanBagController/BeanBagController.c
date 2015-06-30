@@ -22,6 +22,8 @@
 #define SLEEP_SIG_CYCLES				3		//flash pattern before going to sleep
 #define SLEEP_SIG_ON_TIME_MS			750		
 #define SLEEP_SIG_OFF_TIME_MS			750
+#define STARTUP_SIG_CYCLES				5
+#define STARTUP_SIG_DELAY_MS			75
 
 #define EMITTER_PERIOD_US				100		//max = 255
 #define EMITTER_WIDTH_US				10		//max = EMITTER_PERIOD_US
@@ -80,6 +82,7 @@ uint32_t ambientLightLevel = 0;					//current ambient light level = (0 - 1023) *
 //forward declarations
 void flash_led_strip(void);
 void flash_sleep_signal(void);
+void flash_startup_sequence(void);
 void prepare_to_sleep(bool);
 void do_on_wakeup(void);
 void configure_ddr(void);
@@ -104,9 +107,10 @@ int main(void)
 	configure_ddr();
 	PCMSK0 = (1<<PCINT0)|(1<<PCINT1)|(1<<PCINT2);
 	enable_active_mode();
-	WDTCSR = (1<<WDIE)|(1<<WDP3)|(1<<WDP0);	//enabled watchdog interrupt, prescaler = 1024, 128kHz clk = 8-sec tick		
+	WDTCSR = (1<<WDIE)|(1<<WDP3)|(1<<WDP0);	//enabled watchdog interrupt, prescaler = 1024, 128kHz clk = 8-sec tick	
+	flash_startup_sequence();
 	sei();
-		
+			
     while(1)
     {   
 		_delay_ms(MAIN_LOOP_PERIOD_MS);		
@@ -124,9 +128,9 @@ int main(void)
 		
 		if(bFlashPending)
 		{	
-			//disable_emitter();
+			disable_emitter();
 			flash_led_strip();
-			//enable_emitter();			
+			enable_emitter();			
 			GIFR = (1<<PCIF0);		//clear pin change flags triggered by flash			
 			bFlashPending = 0;
 		}
@@ -222,9 +226,40 @@ void flash_sleep_signal(void)
 	}
 }
 
+void flash_startup_sequence(void)
+{
+	for(uint8_t flashes = 0; flashes < STARTUP_SIG_CYCLES; flashes++)
+	{
+		disable_emitter();
+		_delay_ms(STARTUP_SIG_DELAY_MS);
+		enable_emitter();
+		_delay_ms(STARTUP_SIG_DELAY_MS);
+		PORTA |= LED_STRIP_DRV_MASK;
+		_delay_ms(STARTUP_SIG_DELAY_MS);
+		PORTA &= ~LED_STRIP_DRV_MASK;
+		_delay_ms(STARTUP_SIG_DELAY_MS);			
+	}
+
+	for(uint8_t flashes = 0; flashes < STARTUP_SIG_CYCLES; flashes++)
+	{		
+		while(uiNightModeLevel + NIGHT_MODE_STEP <= NIGHT_MODE_MAX_LEVEL)
+		{
+			uiNightModeLevel += NIGHT_MODE_STEP;
+			enable_flash_pwm();
+			_delay_ms(NIGHT_MODE_BREATH_PERIOD_MS / 4);
+		}
+		while(uiNightModeLevel >= NIGHT_MODE_MIN_LEVEL + NIGHT_MODE_STEP)
+		{
+			uiNightModeLevel -= NIGHT_MODE_STEP;
+			enable_flash_pwm();
+			_delay_ms(NIGHT_MODE_BREATH_PERIOD_MS / 4);
+		}
+	}
+	disable_flash_pwm();			
+}
+
 void enable_active_mode(void)
 {
-	//clear flags?
 	enable_rx_vdd();
 	enable_boost();
 	//wait warm up time?	
@@ -302,7 +337,7 @@ void disable_emitter(void)
 {
 	TCCR0A = 0;
 	TCCR0B = 0;
-	//DDRB &= ~(1 << EMITTER_DRV_MASK);
+	DDRB &= ~(1 << EMITTER_DRV_MASK);
 }
 
 void enable_rx_vdd(void)
