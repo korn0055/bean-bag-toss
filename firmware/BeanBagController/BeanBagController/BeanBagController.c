@@ -39,6 +39,7 @@
 #define NIGHT_MODE_STEP					1
 #define NIGHT_MODE_BREATH_PERIOD_MS		20
 #define NIGHT_MODE_MAX_LEVEL			60
+#define NIGHT_MODE_STATIC_LEVEL			30
 #define OVERHANG_DAY_MODE_MAX_LEVEL		255
 #define OVERHANG_DAY_MODE_MULTIPLIER	16
 #define OVERHANG_NIGHT_MODE_MULTIPLIER	8
@@ -143,17 +144,7 @@ int main(void)
 		}
 		sei();
 				
-		if(main_loop_iterations % AMBIENT_LIGHT_MAIN_LOOP_PERIODS == 0)
-		{
-			sample_ambient_light();
-			if(bNightModeEnabled)
-				enable_flash_pwm();				
-			else
-				disable_flash_pwm();				
-		}
-		
-		if( (bNightModeEnabled && main_loop_iterations % NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS == 0) ||
-			(bOverhangDetected && main_loop_iterations % (NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS / (bNightModeEnabled ? OVERHANG_NIGHT_MODE_MULTIPLIER : OVERHANG_DAY_MODE_MULTIPLIER)) == 0) )			
+		if(bOverhangDetected && main_loop_iterations % (NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS / (bNightModeEnabled ? OVERHANG_NIGHT_MODE_MULTIPLIER : OVERHANG_DAY_MODE_MULTIPLIER)) == 0)
 		{
 			if(bIsNightModeLevelIncreasing)
 			{
@@ -170,6 +161,19 @@ int main(void)
 					bIsNightModeLevelIncreasing = true;
 			}
 			enable_flash_pwm();
+		}
+		else if(main_loop_iterations % AMBIENT_LIGHT_MAIN_LOOP_PERIODS == 0)
+		{
+			sample_ambient_light();
+			if(bNightModeEnabled)
+			{
+				uiNightModeLevel = NIGHT_MODE_STATIC_LEVEL;
+				enable_flash_pwm();
+			}			
+			else
+			{
+				disable_flash_pwm();	
+			}			
 		}
 				
 		if(watchdog_ticks_since_flash > IDLE_WDT_TICKS_TIL_SLEEP)
