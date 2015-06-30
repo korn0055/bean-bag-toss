@@ -22,6 +22,8 @@
 #define SLEEP_SIG_CYCLES				3		//flash pattern before going to sleep
 #define SLEEP_SIG_ON_TIME_MS			750		
 #define SLEEP_SIG_OFF_TIME_MS			750
+#define STARTUP_SIG_CYCLES				5
+#define STARTUP_SIG_DELAY_MS			75
 
 #define EMITTER_PERIOD_US				100		//max = 255
 #define EMITTER_WIDTH_US				10		//max = EMITTER_PERIOD_US
@@ -37,8 +39,17 @@
 #define NIGHT_MODE_STEP					1
 #define NIGHT_MODE_BREATH_PERIOD_MS		20
 #define NIGHT_MODE_MAX_LEVEL			60
+#define NIGHT_MODE_STATIC_LEVEL			30
+#define OVERHANG_DAY_MODE_MAX_LEVEL		255
+#define OVERHANG_DAY_MODE_MULTIPLIER	16
+#define OVERHANG_NIGHT_MODE_MULTIPLIER	8
+#define OVERHANG_BREATH_ENABLED			1
 
-#define IDLE_TIME_TIL_SLEEP_SECS		100
+#define IDLE_TIME_TIL_SLEEP_SECS		1000
+#define RECHECK_PERIOD_ON_WAKEUP_MS		10		//period to wait between checks in ms
+#define RECHECK_COUNT_ON_WAKEUP			10		//number of times that a obstacle must be seen before waking up
+
+#define DETECT_DELAY_MS					100
 
 //fixed and derived parameters
 #define F_CPU							1000000	//main clock frequency, F_CPU must be defined before including delay.h
@@ -63,9 +74,13 @@ uint32_t watchdog_ticks_since_flash = 0;		//8-sec ticks
 
 bool bSleepPending = 0;
 bool bNightModeEnabled = 0;
+bool bOverhangDetected = 0;
 bool bIsNightModeLevelIncreasing = true;
 volatile bool bFlashPending = 1;
 uint8_t uiNightModeLevel = NIGHT_MODE_PWM_LEVEL;
+uint8_t uiLastInputState = ( RX1_MASK | RX2_MASK | RX3_MASK );
+volatile uint8_t uiTimeoutRemainingRx = 0;
+
 
 uint32_t ambientLightLevel = 0;					//current ambient light level = (0 - 1023) * AMBIENT_LIGHT_SCALE_FACTOR
 //uint32_t ambientLightWarmUpRemaining = AMBIENT_LIGHT_WARMUP_CYCLES;
@@ -73,12 +88,14 @@ uint32_t ambientLightLevel = 0;					//current ambient light level = (0 - 1023) *
 //forward declarations
 void flash_led_strip(void);
 void flash_sleep_signal(void);
+void flash_startup_sequence(void);
 void prepare_to_sleep(bool);
 void do_on_wakeup(void);
 void configure_ddr(void);
 void enable_active_mode(void);
 void sample_ambient_light(void);
 bool is_beam_blocked(void);
+uint8_t count_set_bits(uint8_t, uint8_t);
 
 void enable_flash_pwm(void);
 void disable_flash_pwm(void);
@@ -96,37 +113,42 @@ int main(void)
 	configure_ddr();
 	PCMSK0 = (1<<PCINT0)|(1<<PCINT1)|(1<<PCINT2);
 	enable_active_mode();
-	WDTCSR = (1<<WDIE)|(1<<WDP3)|(1<<WDP0);	//enabled watchdog interrupt, prescaler = 1024, 128kHz clk = 8-sec tick		
+	WDTCSR = (1<<WDIE)|(1<<WDP3)|(1<<WDP0);	//enabled watchdog interrupt, prescaler = 1024, 128kHz clk = 8-sec tick	
+	flash_startup_sequence();
 	sei();
-		
+			
     while(1)
     {   
-		_delay_ms(MAIN_LOOP_PERIOD_MS);
+		_delay_ms(MAIN_LOOP_PERIOD_MS);		
 		cli();
+		if(uiTimeoutRemainingRx)
+		{
+			uiTimeoutRemainingRx--;
+		}
+		else if(~uiLastInputState & (PINA & ( RX1_MASK | RX2_MASK | RX3_MASK )))
+		{			
+			//check to see if blocked beam is now clear
+			bFlashPending = 1;
+			uiLastInputState = (PINA & ( RX1_MASK | RX2_MASK | RX3_MASK ));
+		}
+		
+		bOverhangDetected = OVERHANG_BREATH_ENABLED && (uiLastInputState != ( RX1_MASK | RX2_MASK | RX3_MASK ));		
+				
 		if(bFlashPending)
-		{					
-			//disable_emitter();
+		{	
+			disable_emitter();
 			flash_led_strip();
-			//enable_emitter();			
+			enable_emitter();			
 			GIFR = (1<<PCIF0);		//clear pin change flags triggered by flash			
 			bFlashPending = 0;
 		}
 		sei();
-		
-		if(main_loop_iterations % AMBIENT_LIGHT_MAIN_LOOP_PERIODS == 0)
-		{
-			sample_ambient_light();
-			if(bNightModeEnabled)
-				enable_flash_pwm();				
-			else
-				disable_flash_pwm();				
-		}
-		
-		if(bNightModeEnabled && main_loop_iterations % NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS == 0)
+				
+		if(bOverhangDetected && main_loop_iterations % (NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS / (bNightModeEnabled ? OVERHANG_NIGHT_MODE_MULTIPLIER : OVERHANG_DAY_MODE_MULTIPLIER)) == 0)
 		{
 			if(bIsNightModeLevelIncreasing)
 			{
-				if(uiNightModeLevel + NIGHT_MODE_STEP <= NIGHT_MODE_MAX_LEVEL)				
+				if(uiNightModeLevel + NIGHT_MODE_STEP <= (bNightModeEnabled ? NIGHT_MODE_MAX_LEVEL : OVERHANG_DAY_MODE_MAX_LEVEL) )
 					uiNightModeLevel += NIGHT_MODE_STEP;
 				else
 					bIsNightModeLevelIncreasing = false;				
@@ -138,6 +160,20 @@ int main(void)
 				else
 					bIsNightModeLevelIncreasing = true;
 			}
+			enable_flash_pwm();
+		}
+		else if(main_loop_iterations % AMBIENT_LIGHT_MAIN_LOOP_PERIODS == 0)
+		{
+			sample_ambient_light();
+			if(bNightModeEnabled)
+			{
+				uiNightModeLevel = NIGHT_MODE_STATIC_LEVEL;
+				enable_flash_pwm();
+			}			
+			else
+			{
+				disable_flash_pwm();	
+			}			
 		}
 				
 		if(watchdog_ticks_since_flash > IDLE_WDT_TICKS_TIL_SLEEP)
@@ -167,6 +203,8 @@ void configure_ddr(void)
 {
 	DDRA = LED_STRIP_DRV_MASK | EMITTER_DRV_MASK;
 	DDRB = BOOST_NSHTD_MASK | RX_VDD_MASK;
+	//enable pull-ups
+	PORTA = (RX1_MASK | RX2_MASK | RX3_MASK);
 }
 
 void flash_led_strip(void)
@@ -201,9 +239,40 @@ void flash_sleep_signal(void)
 	}
 }
 
+void flash_startup_sequence(void)
+{
+	for(uint8_t flashes = 0; flashes < STARTUP_SIG_CYCLES; flashes++)
+	{
+		disable_emitter();
+		_delay_ms(STARTUP_SIG_DELAY_MS);
+		enable_emitter();
+		_delay_ms(STARTUP_SIG_DELAY_MS);
+		PORTA |= LED_STRIP_DRV_MASK;
+		_delay_ms(STARTUP_SIG_DELAY_MS);
+		PORTA &= ~LED_STRIP_DRV_MASK;
+		_delay_ms(STARTUP_SIG_DELAY_MS);			
+	}
+
+	for(uint8_t flashes = 0; flashes < STARTUP_SIG_CYCLES; flashes++)
+	{		
+		while(uiNightModeLevel + NIGHT_MODE_STEP <= NIGHT_MODE_MAX_LEVEL)
+		{
+			uiNightModeLevel += NIGHT_MODE_STEP;
+			enable_flash_pwm();
+			_delay_ms(NIGHT_MODE_BREATH_PERIOD_MS / 4);
+		}
+		while(uiNightModeLevel >= NIGHT_MODE_MIN_LEVEL + NIGHT_MODE_STEP)
+		{
+			uiNightModeLevel -= NIGHT_MODE_STEP;
+			enable_flash_pwm();
+			_delay_ms(NIGHT_MODE_BREATH_PERIOD_MS / 4);
+		}
+	}
+	disable_flash_pwm();			
+}
+
 void enable_active_mode(void)
 {
-	//clear flags?
 	enable_rx_vdd();
 	enable_boost();
 	//wait warm up time?	
@@ -221,17 +290,26 @@ void prepare_to_sleep(bool bFlashSleepSignal)
 	disable_emitter();
 	disable_rx_vdd();
 	if(bFlashSleepSignal)
-		flash_sleep_signal();	
+		flash_sleep_signal();
 	disable_boost();
+	
 }
 
 void do_on_wakeup(void)
 {	
+	bool bWakeup = true;
 	enable_boost();
 	enable_rx_vdd();
 	enable_emitter();
 	_delay_ms(RX_WARMUP_MS);
-	if( is_beam_blocked() )
+	
+	for (uint8_t i = 0; bWakeup && i < RECHECK_COUNT_ON_WAKEUP; i++)	
+	{
+		bWakeup = is_beam_blocked();
+		_delay_ms(RECHECK_PERIOD_ON_WAKEUP_MS);
+	}
+	
+	if(bWakeup)
 	{
 		enable_active_mode();
 		bFlashPending = true;
@@ -272,7 +350,7 @@ void disable_emitter(void)
 {
 	TCCR0A = 0;
 	TCCR0B = 0;
-	//DDRB &= ~(1 << EMITTER_DRV_MASK);
+	DDRB &= ~(1 << EMITTER_DRV_MASK);
 }
 
 void enable_rx_vdd(void)
@@ -319,13 +397,42 @@ bool is_beam_blocked(void)
 	return (PINA & ( RX1_MASK | RX2_MASK | RX3_MASK )) !=  ( ( RX1_MASK | RX2_MASK | RX3_MASK ) );	
 };
 
+uint8_t count_set_bits(uint8_t byte, uint8_t max_bits)
+{
+	uint8_t bits_set = 0;
+	for(uint8_t i = 0; i < max_bits; i++)
+	{
+		if(byte	& (1 << i))
+			bits_set++;		
+	}
+}
 
 ISR(PCINT0_vect)
 {
+	if(uiTimeoutRemainingRx == 0)
+	{	
+		uint8_t input_state = (PINA & ( RX1_MASK | RX2_MASK | RX3_MASK ));
+		/*
+		//check to see if blocked beam is now clear
+		if (~uiLastInputState & input_state)
+		{
+			bFlashPending = 1;
+		}
+		*/
+		//check if new beams have been blocked
+		if(uiLastInputState & ~input_state)
+		{
+			uiTimeoutRemainingRx = DETECT_DELAY_MS;
+			uiLastInputState = input_state;
+		}		
+	}
+
+/*
 	if(is_beam_blocked())
 	{		
 		bFlashPending = 1;
 	}	
+*/
 }
 
 ISR(WATCHDOG_vect)
