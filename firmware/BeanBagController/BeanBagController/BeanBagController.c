@@ -38,7 +38,7 @@
 #define NIGHT_MODE_BREATH_PERIOD_MS		20
 #define NIGHT_MODE_MAX_LEVEL			60
 
-#define IDLE_TIME_TIL_SLEEP_SECS		100
+#define IDLE_TIME_TIL_SLEEP_SECS		1000
 #define RECHECK_PERIOD_ON_WAKEUP_MS		10		//period to wait between checks in ms
 #define RECHECK_COUNT_ON_WAKEUP			10		//number of times that a obstacle must be seen before waking up
 
@@ -186,6 +186,8 @@ void configure_ddr(void)
 {
 	DDRA = LED_STRIP_DRV_MASK | EMITTER_DRV_MASK;
 	DDRB = BOOST_NSHTD_MASK | RX_VDD_MASK;
+	//enable pull-ups
+	PORTA = (RX1_MASK | RX2_MASK | RX3_MASK);
 }
 
 void flash_led_strip(void)
@@ -338,7 +340,7 @@ void sample_ambient_light(void)
 	while(!(ADCSRA & (1<<ADIF)));
 	newValue = ADC;
 	ambientLightLevel = ((AMBIENT_LIGHT_SCALE_FACTOR - AMBIENT_LIGHT_FILTER_ALPHA) * (newValue * AMBIENT_LIGHT_SCALE_FACTOR) + AMBIENT_LIGHT_FILTER_ALPHA * ambientLightLevel) / AMBIENT_LIGHT_SCALE_FACTOR;
-	//bNightModeEnabled = (ambientLightLevel / AMBIENT_LIGHT_SCALE_FACTOR) > (bNightModeEnabled ? (AMBIENT_LIGHT_THRESH - AMBIENT_LIGHT_HYST) : AMBIENT_LIGHT_THRESH);	
+	bNightModeEnabled = (ambientLightLevel / AMBIENT_LIGHT_SCALE_FACTOR) > (bNightModeEnabled ? (AMBIENT_LIGHT_THRESH - AMBIENT_LIGHT_HYST) : AMBIENT_LIGHT_THRESH);	
 }
 
 bool is_beam_blocked(void)
