@@ -22,7 +22,7 @@
 #define SLEEP_SIG_CYCLES				3		//flash pattern before going to sleep
 #define SLEEP_SIG_ON_TIME_MS			750		
 #define SLEEP_SIG_OFF_TIME_MS			750
-#define STARTUP_SIG_CYCLES				5
+#define STARTUP_SIG_CYCLES				3
 #define STARTUP_SIG_DELAY_MS			75
 
 #define EMITTER_PERIOD_US				100		//max = 255
@@ -38,11 +38,11 @@
 #define NIGHT_MODE_MIN_LEVEL			1
 #define NIGHT_MODE_STEP					1
 #define NIGHT_MODE_BREATH_PERIOD_MS		20
-#define NIGHT_MODE_MAX_LEVEL			60
+#define NIGHT_MODE_MAX_LEVEL			80
 #define NIGHT_MODE_STATIC_LEVEL			30
 #define OVERHANG_DAY_MODE_MAX_LEVEL		255
-#define OVERHANG_DAY_MODE_MULTIPLIER	16
-#define OVERHANG_NIGHT_MODE_MULTIPLIER	8
+#define OVERHANG_DAY_MODE_MULTIPLIER	8
+#define OVERHANG_NIGHT_MODE_MULTIPLIER	4
 #define OVERHANG_BREATH_ENABLED			1
 
 #define IDLE_TIME_TIL_SLEEP_SECS		1000
@@ -350,7 +350,7 @@ void disable_emitter(void)
 {
 	TCCR0A = 0;
 	TCCR0B = 0;
-	DDRB &= ~(1 << EMITTER_DRV_MASK);
+	DDRB &= ~EMITTER_DRV_MASK;
 }
 
 void enable_rx_vdd(void)
@@ -405,6 +405,7 @@ uint8_t count_set_bits(uint8_t byte, uint8_t max_bits)
 		if(byte	& (1 << i))
 			bits_set++;		
 	}
+	return bits_set;
 }
 
 ISR(PCINT0_vect)
