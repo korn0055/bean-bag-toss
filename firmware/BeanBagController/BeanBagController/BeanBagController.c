@@ -39,6 +39,10 @@
 #define NIGHT_MODE_STEP					1
 #define NIGHT_MODE_BREATH_PERIOD_MS		20
 #define NIGHT_MODE_MAX_LEVEL			60
+#define OVERHANG_DAY_MODE_MAX_LEVEL		255
+#define OVERHANG_DAY_MODE_MULTIPLIER	16
+#define OVERHANG_NIGHT_MODE_MULTIPLIER	8
+#define OVERHANG_BREATH_ENABLED			1
 
 #define IDLE_TIME_TIL_SLEEP_SECS		1000
 #define RECHECK_PERIOD_ON_WAKEUP_MS		10		//period to wait between checks in ms
@@ -69,6 +73,7 @@ uint32_t watchdog_ticks_since_flash = 0;		//8-sec ticks
 
 bool bSleepPending = 0;
 bool bNightModeEnabled = 0;
+bool bOverhangDetected = 0;
 bool bIsNightModeLevelIncreasing = true;
 volatile bool bFlashPending = 1;
 uint8_t uiNightModeLevel = NIGHT_MODE_PWM_LEVEL;
@@ -126,6 +131,8 @@ int main(void)
 			uiLastInputState = (PINA & ( RX1_MASK | RX2_MASK | RX3_MASK ));
 		}
 		
+		bOverhangDetected = OVERHANG_BREATH_ENABLED && (uiLastInputState != ( RX1_MASK | RX2_MASK | RX3_MASK ));		
+				
 		if(bFlashPending)
 		{	
 			disable_emitter();
@@ -135,7 +142,7 @@ int main(void)
 			bFlashPending = 0;
 		}
 		sei();
-		
+				
 		if(main_loop_iterations % AMBIENT_LIGHT_MAIN_LOOP_PERIODS == 0)
 		{
 			sample_ambient_light();
@@ -145,11 +152,12 @@ int main(void)
 				disable_flash_pwm();				
 		}
 		
-		if(bNightModeEnabled && main_loop_iterations % NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS == 0)
+		if( (bNightModeEnabled && main_loop_iterations % NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS == 0) ||
+			(bOverhangDetected && main_loop_iterations % (NIGHT_MODE_BREATH_MAIN_LOOP_PERIODS / (bNightModeEnabled ? OVERHANG_NIGHT_MODE_MULTIPLIER : OVERHANG_DAY_MODE_MULTIPLIER)) == 0) )			
 		{
 			if(bIsNightModeLevelIncreasing)
 			{
-				if(uiNightModeLevel + NIGHT_MODE_STEP <= NIGHT_MODE_MAX_LEVEL)				
+				if(uiNightModeLevel + NIGHT_MODE_STEP <= (bNightModeEnabled ? NIGHT_MODE_MAX_LEVEL : OVERHANG_DAY_MODE_MAX_LEVEL) )
 					uiNightModeLevel += NIGHT_MODE_STEP;
 				else
 					bIsNightModeLevelIncreasing = false;				
@@ -161,6 +169,7 @@ int main(void)
 				else
 					bIsNightModeLevelIncreasing = true;
 			}
+			enable_flash_pwm();
 		}
 				
 		if(watchdog_ticks_since_flash > IDLE_WDT_TICKS_TIL_SLEEP)
